@@ -1,0 +1,9 @@
+build/
+ssc.egg-info/
+ssc/PatchPC.c
+*.so
+ssc/__pycache__/
+*.dylib
+*.dSYM
+*.o
+*.so
