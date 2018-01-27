@@ -957,6 +957,9 @@ static PetscErrorCode PCSetUp_PATCH(PC pc)
         }
         if (patch->save_operators) {
             ierr = PetscMalloc1(patch->npatch, &patch->mat); CHKERRQ(ierr);
+            if(patch->multiplicative){
+                ierr = PetscMalloc1(patch->npatch, &patch->mat_global_bc_only); CHKERRQ(ierr);
+            }
             for ( PetscInt i = 0; i < patch->npatch; i++ ) {
                 ierr = PCPatchCreateMatrix(pc, patch->patchX[i], patch->patchY[i], patch->mat + i); CHKERRQ(ierr);
                 if(patch->multiplicative){
@@ -1001,8 +1004,10 @@ static PetscErrorCode PCSetUp_PATCH(PC pc)
             ierr = PCPatchComputeOperator(pc, patch->mat[i], i, PETSC_FALSE); CHKERRQ(ierr);
             ierr = KSPSetOperators(patch->ksp[i], patch->mat[i], patch->mat[i]); CHKERRQ(ierr);
 
-            ierr = MatZeroEntries(patch->mat_global_bc_only[i]); CHKERRQ(ierr);
-            ierr = PCPatchComputeOperator(pc, patch->mat_global_bc_only[i], i, PETSC_TRUE); CHKERRQ(ierr);
+            if(patch->multiplicative){
+                ierr = MatZeroEntries(patch->mat_global_bc_only[i]); CHKERRQ(ierr);
+                ierr = PCPatchComputeOperator(pc, patch->mat_global_bc_only[i], i, PETSC_TRUE); CHKERRQ(ierr);
+            }
         }
     }
     if (!pc->setupcalled) {
