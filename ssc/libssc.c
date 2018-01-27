@@ -51,6 +51,7 @@ typedef struct {
 
     PetscBool       save_operators; /* Save all operators (or create/destroy one at a time?) */
     PetscBool       partition_of_unity; /* Weight updates by dof multiplicity? */
+    PetscBool       multiplicative; /* Update residual after each solve, resulting in a multiplicative scheme  */
     PetscInt        npatch;     /* Number of patches */
     PetscInt        bs;            /* block size (can come from global
                                     * operators?) */
@@ -62,6 +63,7 @@ typedef struct {
     Vec             dof_weights; /* In how many patches does each dof lie? */
     Vec            *patchX, *patchY; /* Work vectors for patches */
     Mat            *mat;        /* Operators */
+    Mat            *mat_global_bc_only;        /* Operators with the global bcs only */
     MatType         sub_mat_type;
     PetscErrorCode (*usercomputeop)(PC, Mat, PetscInt, const PetscInt *, PetscInt, const PetscInt *, void *);
     void           *usercomputectx;
@@ -99,6 +101,17 @@ PETSC_EXTERN PetscErrorCode PCPatchSetPartitionOfUnity(PC pc, PetscBool flg)
     PetscFunctionBegin;
 
     patch->partition_of_unity = flg;
+    PetscFunctionReturn(0);
+}
+
+#undef __FUNCT__
+#define __FUNCT__ "PCPatchSetMultiplicative"
+PETSC_EXTERN PetscErrorCode PCPatchSetMultiplicative(PC pc, PetscBool flg)
+{
+    PC_PATCH       *patch = (PC_PATCH *)pc->data;
+    PetscFunctionBegin;
+
+    patch->multiplicative = flg;
     PetscFunctionReturn(0);
 }
 
@@ -946,6 +959,9 @@ static PetscErrorCode PCSetUp_PATCH(PC pc)
             ierr = PetscMalloc1(patch->npatch, &patch->mat); CHKERRQ(ierr);
             for ( PetscInt i = 0; i < patch->npatch; i++ ) {
                 ierr = PCPatchCreateMatrix(pc, patch->patchX[i], patch->patchY[i], patch->mat + i); CHKERRQ(ierr);
+                if(patch->multiplicative){
+                    ierr = PCPatchCreateMatrix(pc, patch->patchX[i], patch->patchY[i], patch->mat_global_bc_only + i); CHKERRQ(ierr);
+                }
             }
         }
         ierr = PetscLogEventEnd(PC_Patch_CreatePatches, pc, 0, 0, 0); CHKERRQ(ierr);
@@ -984,6 +1000,9 @@ static PetscErrorCode PCSetUp_PATCH(PC pc)
             ierr = MatZeroEntries(patch->mat[i]); CHKERRQ(ierr);
             ierr = PCPatchComputeOperator(pc, patch->mat[i], i, PETSC_FALSE); CHKERRQ(ierr);
             ierr = KSPSetOperators(patch->ksp[i], patch->mat[i], patch->mat[i]); CHKERRQ(ierr);
+
+            ierr = MatZeroEntries(patch->mat_global_bc_only[i]); CHKERRQ(ierr);
+            ierr = PCPatchComputeOperator(pc, patch->mat_global_bc_only[i], i, PETSC_TRUE); CHKERRQ(ierr);
         }
     }
     if (!pc->setupcalled) {
@@ -1077,14 +1096,21 @@ static PetscErrorCode PCApply_PATCH(PC pc, Vec x, Vec y)
          * This matrix is then multiplied with the result from the previous ksp
          * to obtain by how much the residual changes. */
 
-        /*Mat mat_no_local_bc;*/
-        /*ierr = PCPatchCreateMatrix(pc, patch->patchX[i], patch->patchY[i], &mat_no_local_bc); CHKERRQ(ierr);*/
-        /*ierr = PCPatchComputeOperator(pc, mat_no_local_bc, i, PETSC_TRUE); CHKERRQ(ierr);*/
-        /*ierr = MatMult(mat_no_local_bc, patch->patchY[i], patch->patchX[i]); CHKERRQ(ierr);*/
-        /*ierr = VecScale(patch->patchX[i], -1.); CHKERRQ(ierr);*/
-        /*ierr = PCPatch_ScatterLocal_Private(pc, i + pStart,*/
-        /*                                    patch->patchX[i], patch->localX,*/
-        /*                                    ADD_VALUES, SCATTER_REVERSE); CHKERRQ(ierr);*/
+        if(patch->multiplicative){
+            if(patch->save_operators){
+                ierr = MatMult(patch->mat_global_bc_only[i], patch->patchY[i], patch->patchX[i]); CHKERRQ(ierr);
+            }
+            else{
+                Mat mat_global_bc_only;
+                ierr = PCPatchCreateMatrix(pc, patch->patchX[i], patch->patchY[i], &mat_global_bc_only); CHKERRQ(ierr);
+                ierr = PCPatchComputeOperator(pc, mat_global_bc_only, i, PETSC_TRUE); CHKERRQ(ierr);
+                ierr = MatMult(mat_global_bc_only, patch->patchY[i], patch->patchX[i]); CHKERRQ(ierr);
+            }
+            ierr = VecScale(patch->patchX[i], -1.); CHKERRQ(ierr);
+            ierr = PCPatch_ScatterLocal_Private(pc, i + pStart,
+                                                patch->patchX[i], patch->localX,
+                                                ADD_VALUES, SCATTER_REVERSE); CHKERRQ(ierr);
+        }
     }
     /* Now patch->localY contains the solution of the patch solves, so
      * we need to combine them all.  This hardcodes an ADDITIVE
@@ -1164,6 +1190,9 @@ static PetscErrorCode PCSetFromOptions_PATCH(PetscOptionItems *PetscOptionsObjec
 
     ierr = PetscOptionsBool("-pc_patch_partition_of_unity", "Weight contributions by dof multiplicity?",
                             "PCPatchSetPartitionOfUnity", patch->partition_of_unity, &patch->partition_of_unity, &flg); CHKERRQ(ierr);
+
+    ierr = PetscOptionsBool("-pc_patch_multiplicative", "Use multiplicative scheme, i.e. update residual after each patch solve?",
+                            "PCPatchSetMultiplicative", patch->multiplicative, &patch->multiplicative, &flg); CHKERRQ(ierr);
 
     ierr = PetscOptionsFList("-pc_patch_sub_mat_type", "Matrix type for patch solves", "PCPatchSetSubMatType",MatList, NULL, sub_mat_type, 256, &flg); CHKERRQ(ierr);
     if (flg) {
