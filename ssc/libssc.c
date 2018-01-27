@@ -38,11 +38,13 @@ typedef struct {
     PetscSection    gtolCounts;   /* Indices to extract from local to
                                    * patch vectors */
     PetscSection    bcCounts;
+    PetscSection    globalBcCounts;
     IS              cells;
     IS              dofs;
     IS              bcNodes;
     IS              gtol;
     IS             *bcs;
+    IS             *globalBcs;
 
     MPI_Datatype    data_type;
     PetscBool       free_type;
@@ -560,16 +562,17 @@ static PetscErrorCode PCPatchCreateCellPatchBCs(PC pc,
     PetscErrorCode  ierr;
     PC_PATCH       *patch      = (PC_PATCH *)pc->data;
     DM              dm         = patch->dm;
-    PetscInt        numBcs;
+    PetscInt        numBcs, numGlobalBcs;
     const PetscInt *bcNodes    = NULL;
     PetscSection    dofSection = patch->dofSection;
     PetscSection    gtolCounts = patch->gtolCounts;
-    PetscSection    bcCounts;
+    PetscSection    bcCounts, globalBcCounts;
     IS              gtol = patch->gtol;
     PetscHashI      globalBcs;
     PetscHashI      localBcs;
     PetscHashI      patchDofs;
     PetscInt       *bcsArray   = NULL;
+    PetscInt       *globalBcsArray   = NULL;
     PetscInt        vStart, vEnd;
     PetscInt        closureSize;
     PetscInt       *closure    = NULL;
@@ -592,12 +595,17 @@ static PetscErrorCode PCPatchCreateCellPatchBCs(PC pc,
     bcCounts = patch->bcCounts;
     ierr = PetscSectionSetChart(bcCounts, vStart, vEnd); CHKERRQ(ierr);
     ierr = PetscMalloc1(vEnd - vStart, &patch->bcs); CHKERRQ(ierr);
+    ierr = PetscSectionCreate(PETSC_COMM_SELF, &patch->globalBcCounts); CHKERRQ(ierr);
+    globalBcCounts = patch->globalBcCounts;
+    ierr = PetscSectionSetChart(globalBcCounts, vStart, vEnd); CHKERRQ(ierr);
+    ierr = PetscMalloc1(vEnd - vStart, &patch->globalBcs); CHKERRQ(ierr);
 
     ierr = ISGetIndices(gtol, &gtolArray); CHKERRQ(ierr);
     ierr = ISGetIndices(facets, &facetsArray); CHKERRQ(ierr);
     for ( PetscInt v = vStart; v < vEnd; v++ ) {
-        PetscInt numBcs, dof, off;
+        PetscInt numBcs, dof, off, numGlobalBcs;
         PetscInt bcIndex = 0;
+        PetscInt globalBcIndex = 0;
         PetscHashIClear(patchDofs);
         PetscHashIClear(localBcs);
         ierr = PetscSectionGetDof(gtolCounts, v, &dof); CHKERRQ(ierr);
@@ -612,6 +620,16 @@ static PetscErrorCode PCPatchCreateCellPatchBCs(PC pc,
                 PetscHashIAdd(localBcs, localDof, 0);
             }
         }
+        /* Now have collected all the global boundary conditions.
+         * Save these before continuing */
+
+        PetscHashISize(localBcs, numGlobalBcs);
+        ierr = PetscSectionSetDof(globalBcCounts, v, numGlobalBcs); CHKERRQ(ierr);
+        ierr = PetscMalloc1(numGlobalBcs, &globalBcsArray); CHKERRQ(ierr);
+        ierr = PetscHashIGetKeys(localBcs, &globalBcIndex, globalBcsArray); CHKERRQ(ierr);
+        ierr = PetscSortInt(numGlobalBcs, globalBcsArray); CHKERRQ(ierr);
+        ierr = ISCreateBlock(PETSC_COMM_SELF, patch->bs, numGlobalBcs, globalBcsArray, PETSC_OWN_POINTER, &(patch->globalBcs[v - vStart])); CHKERRQ(ierr);
+
         ierr = PetscSectionGetDof(facetCounts, v, &dof); CHKERRQ(ierr);
         ierr = PetscSectionGetOffset(facetCounts, v, &off); CHKERRQ(ierr);
         for ( PetscInt i = off; i < off + dof; i++ ) {
@@ -771,7 +789,7 @@ static PetscErrorCode PCPatchCreateMatrix(PC pc, Vec x, Vec y, Mat *mat)
 
 #undef __FUNCT__
 #define __FUNCT__ "PCPatchComputeOperator"
-static PetscErrorCode PCPatchComputeOperator(PC pc, Mat mat, PetscInt which)
+static PetscErrorCode PCPatchComputeOperator(PC pc, Mat mat, PetscInt which, PetscBool zero_global_only)
 {
     PetscErrorCode  ierr;
     PC_PATCH       *patch = (PC_PATCH *)pc->data;
@@ -802,7 +820,12 @@ static PetscErrorCode PCPatchComputeOperator(PC pc, Mat mat, PetscInt which)
     ierr = ISRestoreIndices(patch->dofs, &dofsArray); CHKERRQ(ierr);
     ierr = ISRestoreIndices(patch->cells, &cellsArray); CHKERRQ(ierr);
     /* Apply boundary conditions.  Could also do this through the local_to_patch guy. */
-    ierr = MatZeroRowsColumnsIS(mat, patch->bcs[which-pStart], (PetscScalar)1.0, NULL, NULL); CHKERRQ(ierr);
+    if(zero_global_only){
+        ierr = MatZeroRowsColumnsIS(mat, patch->globalBcs[which-pStart], (PetscScalar)1.0, NULL, NULL); CHKERRQ(ierr);
+    }
+    else{
+        ierr = MatZeroRowsColumnsIS(mat, patch->bcs[which-pStart], (PetscScalar)1.0, NULL, NULL); CHKERRQ(ierr);
+    }
     ierr = PetscLogEventEnd(PC_Patch_ComputeOp, pc, 0, 0, 0); CHKERRQ(ierr);
     PetscFunctionReturn(0);
 }
@@ -959,7 +982,7 @@ static PetscErrorCode PCSetUp_PATCH(PC pc)
     if (patch->save_operators) {
         for ( PetscInt i = 0; i < patch->npatch; i++ ) {
             ierr = MatZeroEntries(patch->mat[i]); CHKERRQ(ierr);
-            ierr = PCPatchComputeOperator(pc, patch->mat[i], i); CHKERRQ(ierr);
+            ierr = PCPatchComputeOperator(pc, patch->mat[i], i, PETSC_FALSE); CHKERRQ(ierr);
             ierr = KSPSetOperators(patch->ksp[i], patch->mat[i], patch->mat[i]); CHKERRQ(ierr);
         }
     }
@@ -1027,7 +1050,7 @@ static PetscErrorCode PCApply_PATCH(PC pc, Vec x, Vec y)
             Mat mat;
             ierr = PCPatchCreateMatrix(pc, patch->patchX[i], patch->patchY[i], &mat); CHKERRQ(ierr);
             /* Populate operator here. */
-            ierr = PCPatchComputeOperator(pc, mat, i); CHKERRQ(ierr);
+            ierr = PCPatchComputeOperator(pc, mat, i, PETSC_FALSE); CHKERRQ(ierr);
             ierr = KSPSetOperators(patch->ksp[i], mat, mat);
             /* Drop reference so the KSPSetOperators below will blow it away. */
             ierr = MatDestroy(&mat); CHKERRQ(ierr);
@@ -1049,11 +1072,27 @@ static PetscErrorCode PCApply_PATCH(PC pc, Vec x, Vec y)
         ierr = PCPatch_ScatterLocal_Private(pc, i + pStart,
                                             patch->patchY[i], patch->localY,
                                             ADD_VALUES, SCATTER_REVERSE); CHKERRQ(ierr);
+
+        /* Create the matrix on the patch but with global bcs applied only.
+         * This matrix is then multiplied with the result from the previous ksp
+         * to obtain by how much the residual changes. */
+
+        /*Mat mat_no_local_bc;*/
+        /*ierr = PCPatchCreateMatrix(pc, patch->patchX[i], patch->patchY[i], &mat_no_local_bc); CHKERRQ(ierr);*/
+        /*ierr = PCPatchComputeOperator(pc, mat_no_local_bc, i, PETSC_TRUE); CHKERRQ(ierr);*/
+        /*ierr = MatMult(mat_no_local_bc, patch->patchY[i], patch->patchX[i]); CHKERRQ(ierr);*/
+        /*ierr = VecScale(patch->patchX[i], -1.); CHKERRQ(ierr);*/
+        /*ierr = PCPatch_ScatterLocal_Private(pc, i + pStart,*/
+        /*                                    patch->patchX[i], patch->localX,*/
+        /*                                    ADD_VALUES, SCATTER_REVERSE); CHKERRQ(ierr);*/
     }
     /* Now patch->localY contains the solution of the patch solves, so
      * we need to combine them all.  This hardcodes an ADDITIVE
      * combination right now.  If one wanted multiplicative, the
      * scatter/gather stuff would have to be reworked a bit. */
+
+    /* TODO: Do we need to change anything here for the multiplicative combination ? */
+
     ierr = VecSet(y, 0.0); CHKERRQ(ierr);
     ierr = VecGetArrayRead(patch->localY, (const PetscScalar **)&localY); CHKERRQ(ierr);
     ierr = VecGetArray(y, &globalY); CHKERRQ(ierr);
