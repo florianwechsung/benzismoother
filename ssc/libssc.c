@@ -49,9 +49,6 @@ typedef struct {
     PetscSection     multBcCounts; /* these are the corresponding BC objects for just the actual */
     IS              *multBcs;      /* Only used for multiplicative smoothing to recalculate residual */
 
-    MPI_Datatype     data_type;
-    PetscBool        free_type;
-
     PetscBool        save_operators; /* Save all operators (or create/destroy one at a time?) */
     PetscBool        partition_of_unity; /* Weight updates by dof multiplicity? */
     PetscBool        multiplicative; /* Gauss-Seidel or Jacobi? */
@@ -119,16 +116,49 @@ PETSC_EXTERN PetscErrorCode PCPatchSetMultiplicative(PC pc, PetscBool flg)
     PetscFunctionReturn(0);
 }
 
-#undef __FUNCT__
-#define __FUNCT__ "PCPatchSetDefaultSF"
-PETSC_EXTERN PetscErrorCode PCPatchSetDefaultSF(PC pc, PetscSF sf)
+static PetscErrorCode PCPatchSetDefaultSF_Private(PC pc, PetscInt n, PetscSF *sf, PetscInt *bs)
 {
     PetscErrorCode  ierr;
     PC_PATCH       *patch = (PC_PATCH *)pc->data;
     PetscFunctionBegin;
 
-    patch->defaultSF = sf;
-    ierr = PetscObjectReference((PetscObject)sf); CHKERRQ(ierr);
+    if (n == 1 && bs[0] == 1) {
+        patch->defaultSF = sf[0];
+        ierr = PetscObjectReference((PetscObject)sf[0]); CHKERRQ(ierr);
+    } else {
+        PetscInt allRoots = 0, allLeaves = 0;
+        PetscInt leafOffset = 0, rootOffset = 0;
+        PetscInt *ilocal = NULL;
+        PetscSFNode *iremote = NULL;
+        PetscInt index = 0;
+
+        for ( PetscInt i = 0; i < n; i++ ) {
+            PetscInt nroots, nleaves;
+            ierr = PetscSFGetGraph(sf[i], &nroots, &nleaves, NULL, NULL); CHKERRQ(ierr);
+            allRoots += nroots * bs[i];
+            allLeaves += nleaves * bs[i];
+        }
+        ierr = PetscMalloc1(allLeaves, &ilocal); CHKERRQ(ierr);
+        ierr = PetscMalloc1(allLeaves, &iremote); CHKERRQ(ierr);
+        for ( PetscInt i = 0; i < n; i++ ) {
+            PetscInt nroots, nleaves;
+            const PetscInt *local = NULL;
+            const PetscSFNode *remote = NULL;
+            ierr = PetscSFGetGraph(sf[i], &nroots, &nleaves, &local, &remote); CHKERRQ(ierr);
+            for ( PetscInt j = 0; j < nleaves; j++ ) {
+                for ( PetscInt k = 0; k < bs[i]; k++ ) {
+                    ilocal[index] = local[j]*bs[i] + k + leafOffset;
+                    iremote[index].rank = remote[j].rank;
+                    iremote[index].index = remote[j].index*bs[i] + k + rootOffset;
+                    ++index;
+                }
+                leafOffset += nleaves * bs[i];
+                rootOffset += nroots * bs[i];
+            }
+        }
+        ierr = PetscSFCreate(PetscObjectComm((PetscObject)pc), &patch->defaultSF); CHKERRQ(ierr);
+        ierr = PetscSFSetGraph(patch->defaultSF, allRoots, allLeaves, ilocal, PETSC_OWN_POINTER, iremote, PETSC_OWN_POINTER); CHKERRQ(ierr);
+    }
     PetscFunctionReturn(0);
 }
 
@@ -150,6 +180,7 @@ PETSC_EXTERN PetscErrorCode PCPatchSetCellNumbering(PC pc, PetscSection cellNumb
 #define __FUNCT__ "PCPatchSetDiscretisationInfo"
 PETSC_EXTERN PetscErrorCode PCPatchSetDiscretisationInfo(PC pc, PetscInt nsubspaces,
                                                          PetscSection *dofSection,
+                                                         PetscSF *sf,
                                                          PetscInt *bs,
                                                          PetscInt *nodesPerCell,
                                                          const PetscInt **cellNodeMap,
@@ -160,6 +191,11 @@ PETSC_EXTERN PetscErrorCode PCPatchSetDiscretisationInfo(PC pc, PetscInt nsubspa
     PetscErrorCode  ierr;
     PC_PATCH       *patch = (PC_PATCH *)pc->data;
     PetscFunctionBegin;
+
+    if ( nsubspaces <= 0 ) {
+        SETERRQ(PETSC_COMM_SELF, PETSC_ERR_ARG_WRONG, "Need at least one subspace");
+    }
+    ierr = PCPatchSetDefaultSF_Private(pc, nsubspaces, sf, bs); CHKERRQ(ierr);
 
     ierr = PetscMalloc1(nsubspaces, &patch->dofSection); CHKERRQ(ierr);
     ierr = PetscMalloc1(nsubspaces, &patch->bs); CHKERRQ(ierr);
@@ -845,11 +881,6 @@ static PetscErrorCode PCReset_PATCH(PC pc)
         }
     }
 
-    if (patch->free_type) {
-        ierr = MPI_Type_free(&patch->data_type); CHKERRQ(ierr);
-        patch->data_type = MPI_DATATYPE_NULL; 
-    }
-
     if (patch->ksp) {
         for ( i = 0; i < patch->npatch; i++ ) {
             ierr = KSPReset(patch->ksp[i]); CHKERRQ(ierr);
@@ -947,7 +978,6 @@ static PetscErrorCode PCPatchComputeOperator(PC pc, Mat mat, Mat multMat, PetscI
     const PetscInt *dofsArray;
     const PetscInt *cellsArray;
     PetscInt        ncell, offset, pStart, pEnd;
-    PetscInt i = which;
 
     PetscFunctionBegin;
 
@@ -1046,21 +1076,6 @@ static PetscErrorCode PCSetUp_PATCH(PC pc)
         PetscInt     pStart, pEnd;
         PetscInt     localSize;
         ierr = PetscLogEventBegin(PC_Patch_CreatePatches, pc, 0, 0, 0); CHKERRQ(ierr);
-
-        /* PEF: disabling parallel for now */
-        /* switch (patch->bs) {
-        case 1:
-            patch->data_type = MPIU_SCALAR;
-            break;
-        case 2:
-            patch->data_type = MPIU_2SCALAR;
-            break;
-        default:
-            ierr = MPI_Type_contiguous(patch->bs, MPIU_SCALAR, &patch->data_type); CHKERRQ(ierr);
-            ierr = MPI_Type_commit(&patch->data_type); CHKERRQ(ierr);
-            patch->free_type = PETSC_TRUE;
-        } */
-        patch->free_type = PETSC_FALSE;
 
         localSize = patch->subspaceOffsets[patch->nsubspaces];
         ierr = VecCreateSeq(PETSC_COMM_SELF, localSize, &patch->localX); CHKERRQ(ierr);
@@ -1170,14 +1185,12 @@ static PetscErrorCode PCApply_PATCH(PC pc, Vec x, Vec y)
     ierr = PetscLogEventBegin(PC_Patch_Apply, pc, 0, 0, 0); CHKERRQ(ierr);
     ierr = PetscOptionsPushGetViewerOff(PETSC_TRUE); CHKERRQ(ierr);
     /* Scatter from global space into overlapped local spaces */
-    /* ierr = VecGetArrayRead(x, &globalX); CHKERRQ(ierr);
+    ierr = VecGetArrayRead(x, &globalX); CHKERRQ(ierr);
     ierr = VecGetArray(patch->localX, &localX); CHKERRQ(ierr);
-    ierr = PetscSFBcastBegin(patch->defaultSF, patch->data_type, globalX, localX); CHKERRQ(ierr);
-    ierr = PetscSFBcastEnd(patch->defaultSF, patch->data_type, globalX, localX); CHKERRQ(ierr);
+    ierr = PetscSFBcastBegin(patch->defaultSF, MPIU_SCALAR, globalX, localX); CHKERRQ(ierr);
+    ierr = PetscSFBcastEnd(patch->defaultSF, MPIU_SCALAR, globalX, localX); CHKERRQ(ierr);
     ierr = VecRestoreArrayRead(x, &globalX); CHKERRQ(ierr);
-    ierr = VecRestoreArray(patch->localX, &localX); CHKERRQ(ierr); */
-    /* PEF: for now, don't care about parallel: veccopy globalX -> localX */
-    ierr = VecCopy(x, patch->localX); CHKERRQ(ierr);
+    ierr = VecRestoreArray(patch->localX, &localX); CHKERRQ(ierr);
 
     ierr = VecSet(patch->localY, 0.0); CHKERRQ(ierr);
     ierr = PetscSectionGetChart(patch->gtolCounts, &pStart, NULL); CHKERRQ(ierr);
@@ -1259,13 +1272,11 @@ static PetscErrorCode PCApply_PATCH(PC pc, Vec x, Vec y)
      * combination right now.  If one wanted multiplicative, the
      * scatter/gather stuff would have to be reworked a bit. */
     ierr = VecSet(y, 0.0); CHKERRQ(ierr);
-    /* PEF: replace with VecCopy for now */
-    ierr = VecCopy(patch->localY, y); CHKERRQ(ierr);
     ierr = VecGetArray(y, &globalY); CHKERRQ(ierr);
-    /* ierr = VecGetArrayRead(patch->localY, (const PetscScalar **)&localY); CHKERRQ(ierr);
-    ierr = PetscSFReduceBegin(patch->defaultSF, patch->data_type, localY, globalY, MPI_SUM); CHKERRQ(ierr);
-    ierr = PetscSFReduceEnd(patch->defaultSF, patch->data_type, localY, globalY, MPI_SUM); CHKERRQ(ierr);
-    ierr = VecRestoreArrayRead(patch->localY, (const PetscScalar **)&localY); CHKERRQ(ierr); */
+    ierr = VecGetArrayRead(patch->localY, (const PetscScalar **)&localY); CHKERRQ(ierr);
+    ierr = PetscSFReduceBegin(patch->defaultSF, MPIU_SCALAR, localY, globalY, MPI_SUM); CHKERRQ(ierr);
+    ierr = PetscSFReduceEnd(patch->defaultSF, MPIU_SCALAR, localY, globalY, MPI_SUM); CHKERRQ(ierr);
+    ierr = VecRestoreArrayRead(patch->localY, (const PetscScalar **)&localY); CHKERRQ(ierr);
 
     if (patch->partition_of_unity) {
         ierr = VecRestoreArray(y, &globalY); CHKERRQ(ierr);
