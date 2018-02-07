@@ -201,7 +201,7 @@ def setup_patch_pc(patch, J, bcs):
     patch.setPatchDMPlex(mesh._plex)
     patch.setPatchCellNumbering(mesh._cell_numbering)
 
-    offsets = numpy.append([0], numpy.cumsum([W.dim() for W in V])).astype(PETSc.IntType)
+    offsets = numpy.append([0], numpy.cumsum([W.dof_count for W in V])).astype(PETSc.IntType)
     patch.setPatchDiscretisationInfo([W.dm.getDefaultSection() for W in V],
                                      [W.dm.getDefaultSF() for W in V],
                                      numpy.array([W.value_size for W in V], dtype=PETSc.IntType),
