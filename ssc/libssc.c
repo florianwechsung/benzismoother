@@ -1108,6 +1108,7 @@ static PetscErrorCode PCSetUp_PATCH(PC pc)
                                                 patch->patchX[i], patch->dof_weights,
                                                 ADD_VALUES, SCATTER_REVERSE); CHKERRQ(ierr);
         }
+        /* XXX: Should we send this through the SF to the global array so we apply partion of unity there? */
         ierr = VecReciprocal(patch->dof_weights); CHKERRQ(ierr);
     }
 
@@ -1228,22 +1229,18 @@ static PetscErrorCode PCApply_PATCH(PC pc, Vec x, Vec y)
             ierr = MatDestroy(&multMat); CHKERRQ(ierr);
         }
     }
+    if (patch->partition_of_unity) {
+        /* XXX: Should this happen on global vec instead? */
+        ierr = VecPointwiseMult(patch->localY, patch->localY, patch->dof_weights); CHKERRQ(ierr);
+    }
     /* Now patch->localY contains the solution of the patch solves, so
-     * we need to combine them all.  This hardcodes an ADDITIVE
-     * combination right now.  If one wanted multiplicative, the
-     * scatter/gather stuff would have to be reworked a bit. */
+     * we need to combine them all. */
     ierr = VecSet(y, 0.0); CHKERRQ(ierr);
     ierr = VecGetArray(y, &globalY); CHKERRQ(ierr);
     ierr = VecGetArrayRead(patch->localY, (const PetscScalar **)&localY); CHKERRQ(ierr);
     ierr = PetscSFReduceBegin(patch->defaultSF, MPIU_SCALAR, localY, globalY, MPI_SUM); CHKERRQ(ierr);
     ierr = PetscSFReduceEnd(patch->defaultSF, MPIU_SCALAR, localY, globalY, MPI_SUM); CHKERRQ(ierr);
     ierr = VecRestoreArrayRead(patch->localY, (const PetscScalar **)&localY); CHKERRQ(ierr);
-
-    if (patch->partition_of_unity) {
-        ierr = VecRestoreArray(y, &globalY); CHKERRQ(ierr);
-        ierr = VecPointwiseMult(y, y, patch->dof_weights); CHKERRQ(ierr);
-        ierr = VecGetArray(y, &globalY); CHKERRQ(ierr);
-    }
 
     /* Now we need to send the global BC values through */
     ierr = VecGetArrayRead(x, &globalX); CHKERRQ(ierr);
