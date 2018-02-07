@@ -117,10 +117,12 @@ static PetscErrorCode PCPatchCreateDefaultSF_Private(PC pc, PetscInt n, PetscSF 
         ierr = PetscObjectReference((PetscObject)sf[0]); CHKERRQ(ierr);
     } else {
         PetscInt allRoots = 0, allLeaves = 0;
-        PetscInt leafOffset = 0, rootOffset = 0;
+        PetscInt leafOffset = 0;
         PetscInt *ilocal = NULL;
         PetscSFNode *iremote = NULL;
+        PetscInt *remoteOffsets = NULL;
         PetscInt index = 0;
+        PetscHashI rankToIndex;
 
         for ( PetscInt i = 0; i < n; i++ ) {
             PetscInt nroots, nleaves;
@@ -130,12 +132,74 @@ static PetscErrorCode PCPatchCreateDefaultSF_Private(PC pc, PetscInt n, PetscSF 
         }
         ierr = PetscMalloc1(allLeaves, &ilocal); CHKERRQ(ierr);
         ierr = PetscMalloc1(allLeaves, &iremote); CHKERRQ(ierr);
+        {
+            PetscInt numRanks = 0;
+            PetscSFNode *remote = NULL;
+            PetscInt index = 0;
+            PetscSF rankSF;
+            PetscInt *ranks = NULL;
+            PetscInt *offsets = NULL;
+            MPI_Datatype contig;
+            PetscHashI ht;
+
+            PetscHashICreate(ht);
+            for (PetscInt i = 0; i < n; i++ ) {
+                PetscInt nranks;
+                const PetscMPIInt *ranks = NULL;
+                ierr = PetscSFSetUp(sf[i]); CHKERRQ(ierr);
+                ierr = PetscSFGetRanks(sf[i], &nranks, &ranks, NULL, NULL, NULL); CHKERRQ(ierr);
+                for (PetscInt j = 0; j < nranks; j++) {
+                    PetscHashIAdd(ht, (PetscInt)ranks[j], 0);
+                }
+            }
+            PetscHashISize(ht, numRanks); CHKERRQ(ierr);
+            ierr = PetscMalloc1(numRanks, &remote); CHKERRQ(ierr);
+            ierr = PetscMalloc1(numRanks, &ranks); CHKERRQ(ierr);
+            ierr = PetscHashIGetKeys(ht, &index, ranks); CHKERRQ(ierr);
+
+            PetscHashICreate(rankToIndex);
+            for (PetscInt i = 0; i < numRanks; i++) {
+                remote[i].rank = ranks[i];
+                remote[i].index = 0;
+                PetscHashIAdd(rankToIndex, ranks[i], i);
+            }
+            ierr = PetscFree(ranks); CHKERRQ(ierr);
+            PetscHashIDestroy(ht);
+            ierr = PetscSFCreate(PetscObjectComm((PetscObject)pc), &rankSF); CHKERRQ(ierr);
+            ierr = PetscSFSetGraph(rankSF, 1, numRanks, NULL, PETSC_OWN_POINTER, remote, PETSC_OWN_POINTER); CHKERRQ(ierr);
+            ierr = PetscSFSetUp(rankSF); CHKERRQ(ierr);
+
+            ierr = PetscMalloc1(n, &offsets); CHKERRQ(ierr);
+            ierr = PetscMalloc1(n*numRanks, &remoteOffsets); CHKERRQ(ierr);
+
+            offsets[0] = 0;
+            for (PetscInt i = 1; i < n; i++) {
+                PetscInt nroots;
+                ierr = PetscSFGetGraph(sf[i-1], &nroots, NULL, NULL, NULL); CHKERRQ(ierr);
+                offsets[i] = offsets[i-1] + nroots*bs[i-1];
+            }
+            ierr = MPI_Type_contiguous(n, MPIU_INT, &contig); CHKERRQ(ierr);
+            ierr = MPI_Type_commit(&contig); CHKERRQ(ierr);
+
+            ierr = PetscSFBcastBegin(rankSF, contig, offsets, remoteOffsets); CHKERRQ(ierr);
+            ierr = PetscSFBcastEnd(rankSF, contig, offsets, remoteOffsets); CHKERRQ(ierr);
+            ierr = MPI_Type_free(&contig); CHKERRQ(ierr);
+            ierr = PetscFree(offsets); CHKERRQ(ierr);
+            ierr = PetscSFDestroy(&rankSF); CHKERRQ(ierr);
+        }
         for ( PetscInt i = 0; i < n; i++ ) {
             PetscInt nroots, nleaves;
             const PetscInt *local = NULL;
             const PetscSFNode *remote = NULL;
             ierr = PetscSFGetGraph(sf[i], &nroots, &nleaves, &local, &remote); CHKERRQ(ierr);
             for ( PetscInt j = 0; j < nleaves; j++ ) {
+                PetscInt rank = remote[j].rank;
+                PetscInt idx, rootOffset;
+                PetscHashIMap(rankToIndex, rank, idx);
+                if (idx == -1) {
+                    SETERRQ(PETSC_COMM_SELF, PETSC_ERR_ARG_WRONGSTATE, "Didn't find rank, huh?");
+                }
+                rootOffset = remoteOffsets[n*idx + i];
                 for ( PetscInt k = 0; k < bs[i]; k++ ) {
                     ilocal[index] = local[j]*bs[i] + k + leafOffset;
                     iremote[index].rank = remote[j].rank;
@@ -144,8 +208,9 @@ static PetscErrorCode PCPatchCreateDefaultSF_Private(PC pc, PetscInt n, PetscSF 
                 }
             }
             leafOffset += nleaves * bs[i];
-            rootOffset += nroots * bs[i];
         }
+        PetscHashIDestroy(rankToIndex);
+        ierr = PetscFree(remoteOffsets); CHKERRQ(ierr);
         ierr = PetscSFCreate(PetscObjectComm((PetscObject)pc), &patch->defaultSF); CHKERRQ(ierr);
         ierr = PetscSFSetGraph(patch->defaultSF, allRoots, allLeaves, ilocal, PETSC_OWN_POINTER, iremote, PETSC_OWN_POINTER); CHKERRQ(ierr);
     }
