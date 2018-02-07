@@ -152,9 +152,9 @@ static PetscErrorCode PCPatchSetDefaultSF_Private(PC pc, PetscInt n, PetscSF *sf
                     iremote[index].index = remote[j].index*bs[i] + k + rootOffset;
                     ++index;
                 }
-                leafOffset += nleaves * bs[i];
-                rootOffset += nroots * bs[i];
             }
+            leafOffset += nleaves * bs[i];
+            rootOffset += nroots * bs[i];
         }
         ierr = PetscSFCreate(PetscObjectComm((PetscObject)pc), &patch->defaultSF); CHKERRQ(ierr);
         ierr = PetscSFSetGraph(patch->defaultSF, allRoots, allLeaves, ilocal, PETSC_OWN_POINTER, iremote, PETSC_OWN_POINTER); CHKERRQ(ierr);
