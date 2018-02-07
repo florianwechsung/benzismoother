@@ -106,7 +106,7 @@ PETSC_EXTERN PetscErrorCode PCPatchSetMultiplicative(PC pc, PetscBool flg)
     PetscFunctionReturn(0);
 }
 
-static PetscErrorCode PCPatchSetDefaultSF_Private(PC pc, PetscInt n, PetscSF *sf, PetscInt *bs)
+static PetscErrorCode PCPatchCreateDefaultSF_Private(PC pc, PetscInt n, PetscSF *sf, PetscInt *bs)
 {
     PetscErrorCode  ierr;
     PC_PATCH       *patch = (PC_PATCH *)pc->data;
@@ -181,7 +181,7 @@ PETSC_EXTERN PetscErrorCode PCPatchSetDiscretisationInfo(PC pc, PetscInt nsubspa
     if ( nsubspaces <= 0 ) {
         SETERRQ(PETSC_COMM_SELF, PETSC_ERR_ARG_WRONG, "Need at least one subspace");
     }
-    ierr = PCPatchSetDefaultSF_Private(pc, nsubspaces, sf, bs); CHKERRQ(ierr);
+    ierr = PCPatchCreateDefaultSF_Private(pc, nsubspaces, sf, bs); CHKERRQ(ierr);
 
     ierr = PetscMalloc1(nsubspaces, &patch->dofSection); CHKERRQ(ierr);
     ierr = PetscMalloc1(nsubspaces, &patch->bs); CHKERRQ(ierr);
