@@ -5,8 +5,8 @@ set(CMAKE_C_COMPILER "mpicc")
 project(ssc)
 
 set(CMAKE_MODULE_PATH "${PROJECT_SOURCE_DIR}/cmake/modules")
-set(CMAKE_CXX_FLAGS "-O2 -mtune=generic -DLINUX -DNDEBUG -fPIC")
-set(CMAKE_C_FLAGS "-O2 -mtune=generic -DLINUX -DNDEBUG -fPIC")
+set(CMAKE_CXX_FLAGS "-O2 -mtune=generic -DLINUX -DNDEBUG -fPIC -ggdb3")
+set(CMAKE_C_FLAGS "-O2 -mtune=generic -DLINUX -DNDEBUG -fPIC -ggdb3")
 
 set(CMAKE_EXE_LINKER_FLAGS "-mtune=generic")
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)

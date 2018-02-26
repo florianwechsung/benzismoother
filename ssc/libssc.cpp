@@ -3,6 +3,7 @@
 #include <petsc/private/hash.h>
 #include <petscsf.h>
 #include "libssc.h"
+#include <set>
 
 PetscLogEvent PC_Patch_CreatePatches, PC_Patch_ComputeOp, PC_Patch_Solve, PC_Patch_Scatter, PC_Patch_Apply, PC_Patch_Prealloc;
 
@@ -1193,7 +1194,7 @@ static PetscErrorCode PCPatchCreateMatrix(PC pc, PetscInt which, Mat *mat)
     }
 
     if (!flg) {
-        PetscHashI      ht;
+        std::set<PetscInt> ht;
         PetscInt       *dnnz       = NULL;
         const PetscInt *dofsArray = NULL;
         PetscInt        pStart, pEnd, ncell, offset;
@@ -1209,14 +1210,11 @@ static PetscErrorCode PCPatchCreateMatrix(PC pc, PetscInt which, Mat *mat)
         ierr = PetscSectionGetDof(patch->cellCounts, which, &ncell); CHKERRQ(ierr);
         ierr = PetscSectionGetOffset(patch->cellCounts, which, &offset); CHKERRQ(ierr);
 
-        ierr = PetscMalloc1(rsize, &dnnz); CHKERRQ(ierr);
-        for (PetscInt i = 0; i < rsize; i++) {
-            dnnz[i] = 0;
-        }
+        ierr = PetscCalloc1(rsize, &dnnz); CHKERRQ(ierr);
         ierr = PetscLogEventBegin(PC_Patch_Prealloc, pc, 0, 0, 0); CHKERRQ(ierr);
-        PetscHashICreate(ht);
+        ht = std::set<PetscInt>();
         /* Overestimate number of entries.  This is exact for DG. */
-        PetscHashIResize(ht, ncell*patch->totalDofsPerCell*patch->totalDofsPerCell);
+        //PetscHashIResize(ht, ncell*patch->totalDofsPerCell*patch->totalDofsPerCell);
         for (PetscInt c = 0; c < ncell; c++) {
             const PetscInt *idx = dofsArray + (offset + c)*patch->totalDofsPerCell;
             for (PetscInt i = 0; i < patch->totalDofsPerCell; i++) {
@@ -1227,16 +1225,13 @@ static PetscErrorCode PCPatchCreateMatrix(PC pc, PetscInt which, Mat *mat)
                     /* This key is a bijection as long as we don't
                      * have more than max(PetscInt)/2 rows per patch. */
                     const PetscInt key = rkey^col;
-                    PetscBool flg;
-                    PetscHashIHasKey(ht, key, flg);
-                    if (!flg) {
-                        PetscHashIAdd(ht, key, 0);
+                    auto pair = ht.insert(key);
+                    if (pair.second == true) {
                         ++dnnz[row];
                     }
                 }
             }
         }
-        PetscHashIDestroy(ht);
         ierr = MatXAIJSetPreallocation(*mat, 1, dnnz, NULL, NULL, NULL); CHKERRQ(ierr);
 
         ierr = PetscFree(dnnz); CHKERRQ(ierr);
@@ -1542,6 +1537,7 @@ static PetscErrorCode PCApply_PATCH(PC pc, Vec x, Vec y)
 
             ierr = PetscLogEventBegin(PC_Patch_Solve, pc, 0, 0, 0); CHKERRQ(ierr);
             ierr = KSPSolve(patch->ksp[i], patch->patchX[i], patch->patchY[i]); CHKERRQ(ierr);
+            exit(0);
             ierr = PetscLogEventEnd(PC_Patch_Solve, pc, 0, 0, 0); CHKERRQ(ierr);
             if (!patch->save_operators) {
                 PC pc;
