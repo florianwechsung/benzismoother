@@ -2,7 +2,7 @@
 #include <petsc.h>
 #include <petsc/private/hash.h>
 #include <petscsf.h>
-#include <libssc.h>
+#include "libssc.h"
 
 PetscLogEvent PC_Patch_CreatePatches, PC_Patch_ComputeOp, PC_Patch_Solve, PC_Patch_Scatter, PC_Patch_Apply, PC_Patch_Prealloc;
 
