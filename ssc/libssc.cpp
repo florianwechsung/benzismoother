@@ -3,7 +3,7 @@
 #include <petsc/private/hash.h>
 #include <petscsf.h>
 #include "libssc.h"
-#include <set>
+#include <unordered_set>
 
 PetscLogEvent PC_Patch_CreatePatches, PC_Patch_ComputeOp, PC_Patch_Solve, PC_Patch_Scatter, PC_Patch_Apply, PC_Patch_Prealloc;
 
@@ -1194,7 +1194,7 @@ static PetscErrorCode PCPatchCreateMatrix(PC pc, PetscInt which, Mat *mat)
     }
 
     if (!flg) {
-        std::set<PetscInt> ht;
+        std::unordered_set<PetscInt> ht;
         PetscInt       *dnnz       = NULL;
         const PetscInt *dofsArray = NULL;
         PetscInt        pStart, pEnd, ncell, offset;
@@ -1212,7 +1212,8 @@ static PetscErrorCode PCPatchCreateMatrix(PC pc, PetscInt which, Mat *mat)
 
         ierr = PetscCalloc1(rsize, &dnnz); CHKERRQ(ierr);
         ierr = PetscLogEventBegin(PC_Patch_Prealloc, pc, 0, 0, 0); CHKERRQ(ierr);
-        ht = std::set<PetscInt>();
+        ht = std::unordered_set<PetscInt>();
+        ht.reserve(ncell*patch->totalDofsPerCell*patch->totalDofsPerCell);
         /* Overestimate number of entries.  This is exact for DG. */
         //PetscHashIResize(ht, ncell*patch->totalDofsPerCell*patch->totalDofsPerCell);
         for (PetscInt c = 0; c < ncell; c++) {
@@ -1537,7 +1538,6 @@ static PetscErrorCode PCApply_PATCH(PC pc, Vec x, Vec y)
 
             ierr = PetscLogEventBegin(PC_Patch_Solve, pc, 0, 0, 0); CHKERRQ(ierr);
             ierr = KSPSolve(patch->ksp[i], patch->patchX[i], patch->patchY[i]); CHKERRQ(ierr);
-            exit(0);
             ierr = PetscLogEventEnd(PC_Patch_Solve, pc, 0, 0, 0); CHKERRQ(ierr);
             if (!patch->save_operators) {
                 PC pc;
