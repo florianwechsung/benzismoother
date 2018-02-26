@@ -8,6 +8,10 @@ PetscLogEvent PC_Patch_CreatePatches, PC_Patch_ComputeOp, PC_Patch_Solve, PC_Pat
 
 static PetscBool PCPatchPackageInitialized = PETSC_FALSE;
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 PETSC_EXTERN PetscErrorCode PCPatchInitializePackage(void)
 {
     PetscErrorCode ierr;
@@ -1918,3 +1922,7 @@ PETSC_EXTERN PetscErrorCode PCCreate_PATCH(PC pc)
 
     PetscFunctionReturn(0);
 }
+
+#ifdef __cplusplus
+}
+#endif

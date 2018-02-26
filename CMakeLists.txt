@@ -12,7 +12,7 @@ set(CMAKE_EXE_LINKER_FLAGS "-mtune=generic")
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 add_library(${PROJECT_NAME} SHARED
-  ssc/libssc.c
+  ssc/libssc.cpp
 )
 
 set_target_properties(${PROJECT_NAME}
