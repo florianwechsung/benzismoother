@@ -4,6 +4,7 @@
 #include <petscsf.h>
 #include "libssc.h"
 #include <unordered_set>
+#include <vector>
 
 PetscLogEvent PC_Patch_CreatePatches, PC_Patch_ComputeOp, PC_Patch_Solve, PC_Patch_Scatter, PC_Patch_Apply, PC_Patch_Prealloc;
 
@@ -1186,18 +1187,16 @@ static PetscErrorCode PCPatchCreateMatrix(PC pc, PetscInt which, Mat *mat)
     ierr = MatAppendOptionsPrefix(*mat, "sub_"); CHKERRQ(ierr);
     if (patch->sub_mat_type) {
         ierr = MatSetType(*mat, patch->sub_mat_type); CHKERRQ(ierr);
-    }
-    ierr = MatSetSizes(*mat, rsize, csize, rsize, csize); CHKERRQ(ierr);
-    ierr = PetscObjectTypeCompare((PetscObject)*mat, MATDENSE, &flg); CHKERRQ(ierr);
+    } ierr = MatSetSizes(*mat, rsize, csize, rsize, csize); CHKERRQ(ierr); ierr = PetscObjectTypeCompare((PetscObject)*mat, MATDENSE, &flg); CHKERRQ(ierr);
     if (!flg) {
         ierr = PetscObjectTypeCompare((PetscObject)*mat, MATSEQDENSE, &flg); CHKERRQ(ierr);
     }
 
     if (!flg) {
-        std::unordered_set<PetscInt> ht;
+        std::vector<std::vector<bool>> ht;
         PetscInt       *dnnz       = NULL;
         const PetscInt *dofsArray = NULL;
-        PetscInt        pStart, pEnd, ncell, offset;
+        PetscInt        pStart, pEnd, ncell, offset, dofCount;
 
         ierr = ISGetIndices(patch->dofs, &dofsArray); CHKERRQ(ierr);
         ierr = PetscSectionGetChart(patch->cellCounts, &pStart, &pEnd); CHKERRQ(ierr);
@@ -1212,23 +1211,26 @@ static PetscErrorCode PCPatchCreateMatrix(PC pc, PetscInt which, Mat *mat)
 
         ierr = PetscCalloc1(rsize, &dnnz); CHKERRQ(ierr);
         ierr = PetscLogEventBegin(PC_Patch_Prealloc, pc, 0, 0, 0); CHKERRQ(ierr);
-        ht = std::unordered_set<PetscInt>();
-        ht.reserve(ncell*patch->totalDofsPerCell*patch->totalDofsPerCell);
+        //ht = std::unordered_set<PetscInt>();
+        //ht.reserve(ncell*patch->totalDofsPerCell*patch->totalDofsPerCell);
+        ierr = PetscSectionGetDof(patch->gtolCounts, which, &dofCount); CHKERRQ(ierr);
+        ht = std::vector<std::vector<bool>>(dofCount, std::vector<bool>(dofCount, false));
         /* Overestimate number of entries.  This is exact for DG. */
         //PetscHashIResize(ht, ncell*patch->totalDofsPerCell*patch->totalDofsPerCell);
         for (PetscInt c = 0; c < ncell; c++) {
             const PetscInt *idx = dofsArray + (offset + c)*patch->totalDofsPerCell;
             for (PetscInt i = 0; i < patch->totalDofsPerCell; i++) {
                 const PetscInt row = idx[i];
-                PetscInt rkey = (row << 4*sizeof(PetscInt));
+                //PetscInt rkey = (row << 4*sizeof(PetscInt));
                 for (PetscInt j = 0; j < patch->totalDofsPerCell; j++) {
                     const PetscInt col = idx[j];
                     /* This key is a bijection as long as we don't
                      * have more than max(PetscInt)/2 rows per patch. */
-                    const PetscInt key = rkey^col;
-                    auto pair = ht.insert(key);
-                    if (pair.second == true) {
+                    //const PetscInt key = rkey^col;
+                    if(!ht[row][col])
+                    {
                         ++dnnz[row];
+                        ht[row][col] = true;
                     }
                 }
             }
