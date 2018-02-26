@@ -1196,7 +1196,7 @@ static PetscErrorCode PCPatchCreateMatrix(PC pc, PetscInt which, Mat *mat)
         std::vector<std::vector<bool>> ht;
         PetscInt       *dnnz       = NULL;
         const PetscInt *dofsArray = NULL;
-        PetscInt        pStart, pEnd, ncell, offset, dofCount;
+        PetscInt        pStart, pEnd, ncell, offset;
 
         ierr = ISGetIndices(patch->dofs, &dofsArray); CHKERRQ(ierr);
         ierr = PetscSectionGetChart(patch->cellCounts, &pStart, &pEnd); CHKERRQ(ierr);
@@ -1211,22 +1211,13 @@ static PetscErrorCode PCPatchCreateMatrix(PC pc, PetscInt which, Mat *mat)
 
         ierr = PetscCalloc1(rsize, &dnnz); CHKERRQ(ierr);
         ierr = PetscLogEventBegin(PC_Patch_Prealloc, pc, 0, 0, 0); CHKERRQ(ierr);
-        //ht = std::unordered_set<PetscInt>();
-        //ht.reserve(ncell*patch->totalDofsPerCell*patch->totalDofsPerCell);
-        ierr = PetscSectionGetDof(patch->gtolCounts, which, &dofCount); CHKERRQ(ierr);
-        ht = std::vector<std::vector<bool>>(dofCount, std::vector<bool>(dofCount, false));
-        /* Overestimate number of entries.  This is exact for DG. */
-        //PetscHashIResize(ht, ncell*patch->totalDofsPerCell*patch->totalDofsPerCell);
+        ht = std::vector<std::vector<bool>>(rsize, std::vector<bool>(rsize, false));
         for (PetscInt c = 0; c < ncell; c++) {
             const PetscInt *idx = dofsArray + (offset + c)*patch->totalDofsPerCell;
             for (PetscInt i = 0; i < patch->totalDofsPerCell; i++) {
                 const PetscInt row = idx[i];
-                //PetscInt rkey = (row << 4*sizeof(PetscInt));
                 for (PetscInt j = 0; j < patch->totalDofsPerCell; j++) {
                     const PetscInt col = idx[j];
-                    /* This key is a bijection as long as we don't
-                     * have more than max(PetscInt)/2 rows per patch. */
-                    //const PetscInt key = rkey^col;
                     if(!ht[row][col])
                     {
                         ++dnnz[row];
